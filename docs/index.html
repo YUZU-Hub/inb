@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>inb — the agent inbox</title>
+<meta name="description" content="A lightweight Go CLI for IMAP and SMTP, designed for AI agents. JSON output, env-based auth, idempotent commands, predictable exit codes, no TTY required.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="inb — the agent inbox">
+<meta property="og:description" content="IMAP/SMTP without the OAuth dance. JSON output, idempotent, no TTY required.">
+<meta property="og:type" content="website">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;0,800;1,400;1,500&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:           #0d1117;
+    --bg-1:         #11161e;
+    --bg-2:         #161b22;
+    --border:       #21262d;
+    --border-2:     #30363d;
+    --text:         #c9d1d9;
+    --text-dim:     #8b949e;
+    --text-faint:   #6e7681;
+    --green:        #7ee787;
+    --green-deep:   #56d364;
+    --red:          #ff7b72;
+    --orange:       #ffa657;
+    --blue:         #79c0ff;
+    --purple:       #d2a8ff;
+    --yellow:       #e3b341;
+
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --gutter: clamp(1rem, 3.5vw, 2.5rem);
+    --rhythm: clamp(2.5rem, 6vw, 5rem);
+    --maxw: 76rem;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    padding: 2.5rem 0 4rem;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  ::selection { background: var(--green); color: #0a0d12; }
+  ::-moz-selection { background: var(--green); color: #0a0d12; }
+
+  /* ── ambient layers ─────────────────────────────── */
+  .grain {
+    position: fixed; inset: 0; pointer-events: none; z-index: 200;
+    opacity: 0.035; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+  .scanlines {
+    position: fixed; inset: 0; pointer-events: none; z-index: 199;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(126,231,135,0) 0px,
+      rgba(126,231,135,0) 2px,
+      rgba(126,231,135,0.012) 3px,
+      rgba(126,231,135,0) 4px
+    );
+  }
+  .glow {
+    position: fixed; pointer-events: none; z-index: 0;
+    width: 60vw; height: 60vw; left: -20vw; top: -25vw;
+    background: radial-gradient(circle at center, rgba(126,231,135,0.07), transparent 60%);
+    filter: blur(40px);
+  }
+  .glow.b {
+    left: auto; right: -25vw; top: 40vh;
+    background: radial-gradient(circle at center, rgba(121,192,255,0.05), transparent 60%);
+  }
+
+  /* ── modeline (top) & status (bottom) ────────────── */
+  .modeline, .statusbar {
+    position: fixed; left: 0; right: 0;
+    font-size: 11.5px; letter-spacing: 0.04em;
+    color: var(--text-dim);
+    background: var(--bg-2);
+    border-color: var(--border);
+    padding: 0.5rem var(--gutter);
+    display: flex; align-items: center; gap: 1rem;
+    z-index: 100;
+    user-select: none;
+    flex-wrap: wrap;
+  }
+  .modeline { top: 0; border-bottom: 1px solid var(--border); }
+  .statusbar { bottom: 0; border-top: 1px solid var(--border); }
+
+  .modeline .mode {
+    background: var(--green); color: #0a0d12; padding: 1px 8px;
+    font-weight: 700; letter-spacing: 0.08em;
+  }
+  .modeline .star { color: var(--orange); }
+  .statusbar .seg { color: var(--text); }
+  .statusbar .seg.git { color: var(--purple); }
+  .statusbar .seg.lic { color: var(--yellow); }
+  .statusbar .grow, .modeline .grow { flex: 1; }
+  .modeline .sep, .statusbar .sep { color: var(--text-faint); }
+
+  /* ── layout ───────────────────────────────────────── */
+  main {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 var(--gutter);
+    position: relative;
+    z-index: 1;
+  }
+
+  section { padding: var(--rhythm) 0; }
+  section + section { border-top: 1px dashed var(--border); }
+
+  /* ── prompt / section headers ────────────────────── */
+  .prompt {
+    display: flex; align-items: baseline; gap: 0.5em;
+    color: var(--text-dim);
+    font-size: 13.5px;
+    margin: 0 0 1.75rem;
+    flex-wrap: wrap;
+  }
+  .prompt::before {
+    content: "";
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: var(--green); margin-right: 0.5rem;
+    transform: translateY(1px);
+  }
+  .prompt .path { color: var(--blue); }
+  .prompt .sigil { color: var(--green); margin-right: 0.35em; }
+  .prompt .cmd { color: var(--text); }
+  .prompt .arg { color: var(--orange); }
+
+  h2.heading {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(1.4rem, 2.6vw, 1.9rem);
+    letter-spacing: -0.02em;
+    margin: 0 0 1.5rem;
+    color: var(--text);
+  }
+  h2.heading .accent { color: var(--green); }
+
+  p.lede {
+    font-size: clamp(1rem, 1.4vw, 1.125rem);
+    color: var(--text);
+    max-width: 60ch;
+    margin: 0 0 1.5rem;
+  }
+  p { color: var(--text-dim); max-width: 65ch; }
+
+  a { color: var(--blue); text-decoration: none; border-bottom: 1px solid transparent; transition: border-color 0.15s, color 0.15s; }
+  a:hover { border-bottom-color: currentColor; }
+
+  /* ── HERO ─────────────────────────────────────────── */
+  .hero { padding-top: clamp(1.5rem, 4vw, 3rem); padding-bottom: var(--rhythm); }
+
+  .wordmark {
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: clamp(7.5px, 1.45vw, 14px);
+    line-height: 1.0;
+    color: var(--green);
+    margin: 0 0 2rem;
+    white-space: pre;
+    letter-spacing: 0;
+    text-shadow: 0 0 22px rgba(126,231,135,0.18);
+    overflow-x: auto;
+  }
+  .wordmark span { display: block; opacity: 0; animation: slideIn 0.5s cubic-bezier(.16,.84,.44,1) forwards; }
+  .wordmark span:nth-child(1) { animation-delay: 0.00s; }
+  .wordmark span:nth-child(2) { animation-delay: 0.07s; }
+  .wordmark span:nth-child(3) { animation-delay: 0.14s; }
+  .wordmark span:nth-child(4) { animation-delay: 0.21s; }
+  .wordmark span:nth-child(5) { animation-delay: 0.28s; }
+  .wordmark span:nth-child(6) { animation-delay: 0.35s; }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(6px); filter: blur(3px); }
+    to   { opacity: 1; transform: translateY(0);   filter: blur(0);   }
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .delay-1 { animation: fadeUp 0.6s 0.45s both ease-out; }
+  .delay-2 { animation: fadeUp 0.6s 0.60s both ease-out; }
+  .delay-3 { animation: fadeUp 0.6s 0.75s both ease-out; }
+  .delay-4 { animation: fadeUp 0.6s 0.90s both ease-out; }
+
+  .tagline {
+    font-size: clamp(1.05rem, 2vw, 1.45rem);
+    color: var(--text);
+    max-width: 32ch;
+    margin: 0 0 2.25rem;
+    line-height: 1.45;
+    font-weight: 500;
+  }
+  .tagline .em { color: var(--green); font-style: italic; font-weight: 500; }
+  .tagline .dim { color: var(--text-dim); }
+  .tagline .strike { color: var(--red); text-decoration: line-through; text-decoration-thickness: 1.5px; }
+
+  .install {
+    margin: 0 0 2rem;
+    max-width: 56rem;
+  }
+  .install .row {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.65rem 1rem;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+  }
+  .install .row + .row { margin-top: 0.5rem; }
+  .install .sigil { color: var(--green); font-weight: 600; }
+  .install code {
+    flex: 1; color: var(--text); font-family: var(--mono);
+    overflow-x: auto; white-space: nowrap;
+  }
+  .install .flag { color: var(--blue); }
+  .install .pkg  { color: var(--orange); }
+  .install .com  { color: var(--purple); }
+
+  /* ── copy button ──────────────────────────────────── */
+  .copy {
+    font: inherit; font-size: 11.5px; color: var(--text-dim);
+    background: transparent; border: 1px solid var(--border-2);
+    padding: 3px 8px; cursor: pointer; letter-spacing: 0.04em;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .copy:hover { color: var(--green); border-color: var(--green); }
+  .copy.ok { color: var(--green); border-color: var(--green); background: rgba(126,231,135,0.07); }
+
+  .hero-links {
+    display: flex; flex-wrap: wrap; gap: 1.25rem 2rem; align-items: center;
+    font-size: 13px;
+  }
+  .hero-links .pill {
+    display: inline-flex; align-items: center; gap: 0.4em;
+    padding: 4px 12px; border: 1px solid var(--border-2);
+    color: var(--text); transition: all 0.15s;
+  }
+  .hero-links .pill:hover { border-color: var(--green); color: var(--green); }
+  .hero-links .pill .arrow { color: var(--green); }
+  .hero-links .badge {
+    color: var(--text-faint); font-size: 11.5px; letter-spacing: 0.06em;
+  }
+  .hero-links .badge .dot { color: var(--green); }
+
+  /* ── feature grid ─────────────────────────────────── */
+  .why-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    gap: 0;
+    margin: 2rem 0 0;
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+  }
+  .card {
+    padding: 1.5rem 1.5rem 1.75rem;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, transparent 0%, rgba(126,231,135,0.012) 100%);
+    transition: background 0.2s;
+    position: relative;
+  }
+  .card:hover { background: linear-gradient(180deg, transparent 0%, rgba(126,231,135,0.04) 100%); }
+  .card .num {
+    font-size: 11px; color: var(--text-faint); letter-spacing: 0.12em;
+    margin-bottom: 1rem; display: flex; gap: 0.75rem; align-items: baseline;
+  }
+  .card .num .tag {
+    color: var(--green); font-weight: 700;
+  }
+  .card h3 {
+    font-family: var(--mono); font-weight: 700;
+    font-size: 1.05rem; letter-spacing: -0.01em;
+    color: var(--text); margin: 0 0 0.6rem;
+  }
+  .card h3 .symbol { color: var(--green); font-weight: 500; }
+  .card p { color: var(--text-dim); font-size: 13.5px; margin: 0 0 0.85rem; }
+  .card .ex {
+    color: var(--text-faint); font-size: 12px; padding: 0.4rem 0.6rem;
+    background: var(--bg-1); border-left: 2px solid var(--border-2);
+    margin-top: auto; display: block; overflow-x: auto;
+    white-space: nowrap;
+  }
+  .card .ex .k { color: var(--blue); }
+  .card .ex .v { color: var(--orange); }
+  .card .ex .c { color: var(--green); }
+
+  /* ── quickstart ───────────────────────────────────── */
+  .steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+  .steps li {
+    counter-increment: step;
+    position: relative;
+    padding: 1.25rem 0 1.5rem 3.5rem;
+    border-bottom: 1px dashed var(--border);
+  }
+  .steps li:last-child { border-bottom: 0; }
+  .steps li::before {
+    content: "[" counter(step, decimal-leading-zero) "]";
+    position: absolute; left: 0; top: 1.35rem;
+    color: var(--green); font-weight: 700; font-size: 13px;
+    letter-spacing: 0.06em;
+  }
+  .steps h3 {
+    margin: 0 0 0.5rem; font-size: 1.05rem; font-weight: 700;
+    color: var(--text);
+  }
+  .steps p { font-size: 14px; margin: 0 0 0.8rem; max-width: 64ch; }
+
+  /* ── code blocks ──────────────────────────────────── */
+  pre.block, .term {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 1rem 1.1rem 1.05rem;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text);
+    margin: 0;
+    position: relative;
+  }
+  .term { padding: 0; }
+  .term-head {
+    display: flex; align-items: center;
+    padding: 0.45rem 0.85rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-2);
+    color: var(--text-faint); font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  .term-head .dots { display: inline-flex; gap: 5px; margin-right: 0.85rem; }
+  .term-head .dots span { width: 8px; height: 8px; border-radius: 50%; background: var(--border-2); }
+  .term-head .title { color: var(--text-dim); }
+  .term-head .grow { flex: 1; }
+  .term-head .copy { font-size: 10.5px; padding: 1px 7px; }
+  .term-body { padding: 0.9rem 1.1rem 1rem; overflow-x: auto; font-size: 12.5px; line-height: 1.7; white-space: pre; }
+
+  .term-body .p   { color: var(--green); font-weight: 700; }
+  .term-body .cmd { color: var(--text); }
+  .term-body .flag { color: var(--blue); }
+  .term-body .str  { color: var(--orange); }
+  .term-body .num  { color: var(--purple); }
+  .term-body .cmt  { color: var(--text-faint); font-style: italic; }
+  .term-body .out  { color: var(--text-dim); }
+  .term-body .ok   { color: var(--green); }
+  .term-body .err  { color: var(--red); }
+  .term-body .key  { color: var(--blue); }
+  .term-body .val  { color: var(--orange); }
+  .term-body .hi   { color: var(--green); }
+  .term-body .kw   { color: var(--red); }
+  .term-body .typ  { color: var(--blue); }
+
+  /* ── manpage ──────────────────────────────────────── */
+  .manpage {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    padding: 1.5rem clamp(1rem, 2.5vw, 1.75rem);
+    font-size: 13px; line-height: 1.75;
+  }
+  .manpage h3 {
+    font-size: 12px; letter-spacing: 0.18em; font-weight: 700;
+    margin: 1.4rem 0 0.5rem;
+    color: var(--green);
+  }
+  .manpage h3:first-child { margin-top: 0; }
+  .manpage dl { display: grid; grid-template-columns: 12.5rem 1fr; gap: 0.25rem 1.5rem; margin: 0; }
+  @media (max-width: 580px) {
+    .manpage dl { grid-template-columns: 1fr; gap: 0.1rem 0; }
+    .manpage dd { padding-left: 1rem; margin-bottom: 0.4rem; }
+  }
+  .manpage dt {
+    color: var(--text);
+    font-weight: 500;
+  }
+  .manpage dt .alias { color: var(--text-faint); }
+  .manpage dd { margin: 0; color: var(--text-dim); }
+  .manpage dd .flag { color: var(--blue); }
+  .manpage dd .arg  { color: var(--orange); }
+  .manpage .desc { color: var(--text); margin: 0 0 1rem; max-width: 70ch; }
+  .manpage code { color: var(--orange); }
+
+  /* ── recipes ──────────────────────────────────────── */
+  .recipe {
+    margin: 2rem 0 0;
+    display: grid;
+    grid-template-columns: minmax(0, 24rem) 1fr;
+    gap: 2rem;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    .recipe { grid-template-columns: 1fr; gap: 1rem; }
+  }
+  .recipe-meta .label {
+    font-size: 11px; letter-spacing: 0.14em;
+    color: var(--green); margin-bottom: 0.5rem;
+  }
+  .recipe-meta h3 {
+    margin: 0 0 0.6rem; font-size: 1.2rem; font-weight: 700;
+    color: var(--text); letter-spacing: -0.01em;
+  }
+  .recipe-meta p { font-size: 13.5px; margin: 0 0 0.7rem; }
+  .recipe-meta .tags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+  .recipe-meta .tag {
+    font-size: 10.5px; letter-spacing: 0.08em; padding: 1px 7px;
+    border: 1px solid var(--border-2); color: var(--text-dim);
+  }
+
+  /* ── footer note ──────────────────────────────────── */
+  .endnote {
+    margin-top: var(--rhythm);
+    padding-top: 1.5rem;
+    border-top: 1px dashed var(--border);
+    color: var(--text-faint);
+    font-size: 12px;
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+  }
+  .endnote a { color: var(--text-dim); }
+  .endnote a:hover { color: var(--green); }
+
+  /* ── decorations ──────────────────────────────────── */
+  .rule {
+    border: 0; height: 1px;
+    background-image: linear-gradient(to right, var(--border) 50%, transparent 50%);
+    background-size: 8px 1px;
+    margin: 0;
+  }
+
+  .cursor {
+    display: inline-block; width: 0.55em; height: 1.05em;
+    background: var(--green); vertical-align: -2px;
+    animation: blink 1.05s steps(2, start) infinite;
+    margin-left: 0.25em;
+  }
+  @keyframes blink { to { opacity: 0; } }
+
+  .kicker {
+    display: inline-block;
+    color: var(--green); font-size: 11px;
+    letter-spacing: 0.22em; font-weight: 500;
+    margin-bottom: 1rem;
+  }
+  .kicker::before { content: "── "; color: var(--green); }
+
+  /* ── scrollbar ────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border-2); border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+  /* ── small screen polish ─────────────────────────── */
+  @media (max-width: 520px) {
+    body { padding-top: 3rem; padding-bottom: 4.5rem; }
+    .modeline, .statusbar { font-size: 10.5px; gap: 0.6rem; padding-left: 1rem; padding-right: 1rem; }
+    .modeline .mode { padding: 1px 6px; }
+  }
+
+  /* reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grain"></div>
+<div class="scanlines"></div>
+<div class="glow"></div>
+<div class="glow b"></div>
+
+<header class="modeline" role="banner">
+  <span class="mode">NORMAL</span>
+  <span class="star">*</span>
+  <span>~/inb/docs/index.html</span>
+  <span class="sep">·</span>
+  <span>readonly</span>
+  <span class="grow"></span>
+  <span>utf-8</span>
+  <span class="sep">·</span>
+  <span>LF</span>
+  <span class="sep">·</span>
+  <span>1:1</span>
+</header>
+
+<main>
+
+  <!-- ─────────────────────────── HERO ─────────────────────────── -->
+  <section class="hero" aria-labelledby="hero-title">
+    <pre class="wordmark" aria-label="inb" id="hero-title"><span>██╗███╗   ██╗██████╗ </span><span>██║████╗  ██║██╔══██╗</span><span>██║██╔██╗ ██║██████╔╝</span><span>██║██║╚██╗██║██╔══██╗</span><span>██║██║ ╚████║██████╔╝</span><span>╚═╝╚═╝  ╚═══╝╚═════╝ </span></pre>
+
+    <p class="tagline delay-1">
+      The agent inbox.
+      <br><span class="dim">A tiny Go CLI for IMAP &amp; SMTP — no SDK, no OAuth dance, no TTY.</span>
+    </p>
+
+    <div class="install delay-2">
+      <div class="row">
+        <span class="sigil">$</span>
+        <code id="cmd-install"><span class="com">go install</span> <span class="pkg">github.com/yuzu-hub/inb@latest</span></code>
+        <button class="copy" data-copy="go install github.com/yuzu-hub/inb@latest" aria-label="copy install command">copy</button>
+      </div>
+      <div class="row">
+        <span class="sigil">$</span>
+        <code><span class="com">inb</span> <span class="flag">setup</span><span class="cursor" aria-hidden="true"></span></code>
+        <button class="copy" data-copy="inb setup" aria-label="copy setup command">copy</button>
+      </div>
+    </div>
+
+    <nav class="hero-links delay-3" aria-label="primary">
+      <a class="pill" href="https://github.com/yuzu-hub/inb"><span>view on github</span><span class="arrow">→</span></a>
+      <a class="pill" href="#commands"><span>command reference</span><span class="arrow">→</span></a>
+      <a class="pill" href="#recipes"><span>agent recipes</span><span class="arrow">→</span></a>
+      <a class="pill" href="./llms.txt"><span>llms.txt</span><span class="arrow">→</span></a>
+      <span class="badge"><span class="dot">●</span> v0.1.0 &nbsp;·&nbsp; go 1.22 &nbsp;·&nbsp; ~6 MB static binary</span>
+    </nav>
+  </section>
+
+  <!-- ─────────────────────────── WHY-AGENTS ─────────────────────────── -->
+  <section id="why">
+    <div class="prompt">
+      <span class="path">~/inb</span>
+      <span class="sigil">$</span>
+      <span class="cmd">cat</span>
+      <span class="arg">WHY-AGENTS.md</span>
+    </div>
+
+    <span class="kicker">the design brief</span>
+    <h2 class="heading">Most email tools assume <span class="accent">a human</span> on the other end.</h2>
+    <p class="lede">
+      inb assumes nothing. Every surface — auth, output, addressing, errors —
+      is shaped for a process that can't click "Allow" in a browser tab, can't read
+      a screenshot of a thread, and shouldn't have to. Six concrete consequences:
+    </p>
+
+    <div class="why-grid">
+
+      <article class="card">
+        <div class="num"><span class="tag">01</span><span>output</span></div>
+        <h3>JSON on every command <span class="symbol">⟶</span></h3>
+        <p>Add <code style="color:var(--blue)">--json</code> and you get parseable, stable schemas. Pipe straight into <code style="color:var(--orange)">jq</code> or your model's tool layer. No screen-scraping.</p>
+        <span class="ex"><span class="c">inb list --unread --json |</span> <span class="k">jq</span> <span class="v">'.[].subject'</span></span>
+      </article>
+
+      <article class="card">
+        <div class="num"><span class="tag">02</span><span>auth</span></div>
+        <h3>Env vars. That's it. <span class="symbol">⟶</span></h3>
+        <p>Credentials live in <code style="color:var(--orange)">INB_*</code> environment variables or <code style="color:var(--orange)">~/.inb.env</code>. No OAuth redirect, no browser, no token refresh thread.</p>
+        <span class="ex"><span class="k">INB_IMAP_HOST</span>=<span class="v">imap.gmail.com</span></span>
+      </article>
+
+      <article class="card">
+        <div class="num"><span class="tag">03</span><span>addressing</span></div>
+        <h3>UIDs, not nicknames <span class="symbol">⟶</span></h3>
+        <p>Every message is referenced by IMAP UID — stable within a folder, easy to thread through a plan. Agents can re-read their own state.</p>
+        <span class="ex"><span class="c">inb read</span> <span class="v">421</span> <span class="k">--max-bytes</span>=<span class="v">8192</span></span>
+      </article>
+
+      <article class="card">
+        <div class="num"><span class="tag">04</span><span>idempotence</span></div>
+        <h3>Re-running is safe <span class="symbol">⟶</span></h3>
+        <p>Marking read twice is fine. Moving to a folder it's already in is fine. The agent doesn't need to remember whether it already did the thing.</p>
+        <span class="ex"><span class="c">inb mark</span> <span class="v">421</span> <span class="k">--read</span></span>
+      </article>
+
+      <article class="card">
+        <div class="num"><span class="tag">05</span><span>exit codes</span></div>
+        <h3>0 / 1 / 2, like UNIX <span class="symbol">⟶</span></h3>
+        <p><span style="color:var(--green)">0</span> success, <span style="color:var(--orange)">1</span> anything went wrong (net, auth, bad flag, missing message), <span style="color:var(--red)">2</span> unknown subcommand. Errors go to stderr — loops branch on <code style="color:var(--orange)">$?</code>, no prose parsing.</p>
+        <span class="ex"><span class="c">inb send ...</span> <span class="k">||</span> <span class="v">retry_with_backoff</span></span>
+      </article>
+
+      <article class="card">
+        <div class="num"><span class="tag">06</span><span>no TTY</span></div>
+        <h3>Flag-driven, never asks <span class="symbol">⟶</span></h3>
+        <p>Outside of <code style="color:var(--orange)">setup</code>, inb never prompts. Body via <code style="color:var(--orange)">--body</code>, <code style="color:var(--orange)">--body-file</code>, or stdin. Headless containers, cron jobs, agent sandboxes — all fine.</p>
+        <span class="ex"><span class="c">echo</span> <span class="v">"hi"</span> | <span class="c">inb send</span> <span class="k">--body</span>=<span class="v">-</span></span>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ─────────────────────────── QUICKSTART ─────────────────────────── -->
+  <section id="quickstart">
+    <div class="prompt">
+      <span class="path">~/inb</span>
+      <span class="sigil">$</span>
+      <span class="cmd">man</span>
+      <span class="arg">quickstart</span>
+    </div>
+
+    <span class="kicker">three commands, two minutes</span>
+    <h2 class="heading">From zero to first <span class="accent">list</span>.</h2>
+
+    <ol class="steps">
+
+      <li>
+        <h3>Install the binary</h3>
+        <p>One static binary, no runtime deps. Or grab a release from GitHub and drop it on <code style="color:var(--orange)">$PATH</code>.</p>
+        <div class="term">
+          <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">install.sh</span><span class="grow"></span><button class="copy" data-copy="go install github.com/yuzu-hub/inb@latest&#10;inb version">copy</button></div>
+          <div class="term-body"><span class="p">$</span> <span class="cmd">go install</span> <span class="str">github.com/yuzu-hub/inb@latest</span>
+<span class="p">$</span> <span class="cmd">inb</span> <span class="flag">version</span>
+<span class="out">0.1.0</span></div>
+        </div>
+      </li>
+
+      <li>
+        <h3>Configure credentials</h3>
+        <p>The wizard detects your provider (Gmail, Fastmail, iCloud, generic IMAP) and writes <code style="color:var(--orange)">~/.inb.env</code>. Or set env vars directly — agents typically prefer the latter so secrets live in their sandbox, not on disk.</p>
+        <div class="term">
+          <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">setup &mdash; interactive</span><span class="grow"></span><button class="copy" data-copy="inb setup">copy</button></div>
+          <div class="term-body"><span class="p">$</span> <span class="cmd">inb</span> <span class="flag">setup</span>
+<span class="cmt"># detected: gmail. uses app passwords (not your account password).</span>
+<span class="cmt"># https://myaccount.google.com/apppasswords</span>
+<span class="out">imap user </span><span class="ok">›</span><span class="out"> alice@gmail.com</span>
+<span class="out">imap pass </span><span class="ok">›</span><span class="out"> ••••••••••••••••</span>
+<span class="out">testing imap.gmail.com:993 ........................... </span><span class="ok">ok</span>
+<span class="out">testing smtp.gmail.com:587 ........................... </span><span class="ok">ok</span>
+<span class="out">wrote ~/.inb.env (chmod 600)</span></div>
+        </div>
+        <div class="term" style="margin-top:0.6rem">
+          <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">…or env vars only (no file)</span><span class="grow"></span><button class="copy" data-copy="export INB_IMAP_HOST=imap.gmail.com&#10;export INB_IMAP_USER=alice@gmail.com&#10;export INB_IMAP_PASS=app_password_here&#10;export INB_SMTP_HOST=smtp.gmail.com&#10;export INB_FROM='Alice &lt;alice@gmail.com&gt;'">copy</button></div>
+          <div class="term-body"><span class="key">export</span> <span class="cmd">INB_IMAP_HOST</span>=<span class="str">imap.gmail.com</span>
+<span class="key">export</span> <span class="cmd">INB_IMAP_USER</span>=<span class="str">alice@gmail.com</span>
+<span class="key">export</span> <span class="cmd">INB_IMAP_PASS</span>=<span class="str">app_password_here</span>
+<span class="key">export</span> <span class="cmd">INB_SMTP_HOST</span>=<span class="str">smtp.gmail.com</span>
+<span class="key">export</span> <span class="cmd">INB_FROM</span>=<span class="str">'Alice &lt;alice@gmail.com&gt;'</span></div>
+        </div>
+      </li>
+
+      <li>
+        <h3>Do something useful</h3>
+        <p>Read your inbox, draft a reply, mark it done — entirely from the shell.</p>
+        <div class="term">
+          <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">~/inb $</span><span class="grow"></span><button class="copy" data-copy="inb list --unread --limit 5">copy</button></div>
+          <div class="term-body"><span class="p">$</span> <span class="cmd">inb</span> <span class="flag">list</span> <span class="flag">--unread</span> <span class="flag">--limit</span> <span class="num">5</span>
+<span class="out">UID    DATE        FROM                       SUBJECT</span>
+<span class="hi">421</span>   <span class="out">2026-05-10  alice@example.com          Re: PR review needed</span>
+<span class="hi">419</span>   <span class="out">2026-05-10  ci@buildkite.io            </span><span class="err">Build #2841 failed</span><span class="out"></span>
+<span class="hi">417</span>   <span class="out">2026-05-09  newsletter@golangweekly.com weekly digest</span>
+<span class="hi">414</span>   <span class="out">2026-05-09  noreply@github.com         [inb] new issue</span>
+<span class="hi">412</span>   <span class="out">2026-05-08  founder@startup.com        intro? warm lead</span>
+
+<span class="p">$</span> <span class="cmd">inb</span> <span class="flag">read</span> <span class="num">421</span> <span class="flag">--max-bytes</span>=<span class="num">2000</span> <span class="flag">--mark-read</span>
+<span class="cmt"># &lt;headers + truncated body&gt;</span></div>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ─────────────────────────── COMMANDS / MANPAGE ─────────────────────────── -->
+  <section id="commands">
+    <div class="prompt">
+      <span class="path">~/inb</span>
+      <span class="sigil">$</span>
+      <span class="cmd">man</span>
+      <span class="arg">inb</span>
+    </div>
+
+    <span class="kicker">surface area</span>
+    <h2 class="heading">Eleven commands. <span class="accent">No surprises.</span></h2>
+    <p class="lede">
+      Every command takes <code style="color:var(--orange)">--json</code> for machine output and <code style="color:var(--orange)">--folder &lt;name&gt;</code>
+      to scope to a non-INBOX folder. Run <code style="color:var(--orange)">inb &lt;cmd&gt; --help</code> for the full flag set.
+    </p>
+
+    <div class="manpage" role="region" aria-label="manpage">
+
+      <h3>SYNOPSIS</h3>
+      <p class="desc"><code>inb &lt;command&gt; [flags]</code></p>
+
+      <h3>READ COMMANDS</h3>
+      <dl>
+        <dt>list <span class="alias">(ls)</span></dt>
+        <dd>list messages with <span class="flag">--since</span>/<span class="flag">--before</span>/<span class="flag">--from</span>/<span class="flag">--subject</span>/<span class="flag">--unread</span>/<span class="flag">--search</span></dd>
+
+        <dt>read <span class="alias">(show)</span> <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>fetch headers + body. <span class="flag">--max-bytes</span> (default 32768) truncates body; <span class="flag">--full</span>=no limit; <span class="flag">--raw</span> dumps raw RFC822; <span class="flag">--headers-only</span> skips body; <span class="flag">--html</span> prefers HTML; <span class="flag">--mark-read</span> sets \Seen atomically</dd>
+
+        <dt>search <span class="arg">&lt;query&gt;</span></dt>
+        <dd>server-side full-text search (IMAP TEXT); shorthand for <code>list --search</code></dd>
+
+        <dt>folders</dt>
+        <dd>list IMAP folders (returns name + delimiter + attributes in JSON mode)</dd>
+
+        <dt>attachments <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>list attachments: index (1-based), filename, mime type, size. <strong style="color:var(--orange)">Heads-up:</strong> JSON keys are PascalCase (<code>Filename</code>, <code>ContentType</code>, <code>Size</code>) — every other command uses snake_case</dd>
+
+        <dt>save-attachment <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>extract one attachment: <span class="flag">--name</span> (case-insensitive) or <span class="flag">--index</span> (1-based). <span class="flag">--out</span> accepts a directory (joins the filename) or a full path; default = cwd. Written 0600.</dd>
+      </dl>
+
+      <h3>WRITE COMMANDS</h3>
+      <dl>
+        <dt>send</dt>
+        <dd>compose &amp; send: <span class="flag">--to</span>/<span class="flag">--cc</span>/<span class="flag">--bcc</span>/<span class="flag">--subject</span>/<span class="flag">--body</span> (use <code>-</code> for stdin); <span class="flag">--attach</span> is repeatable; appends to Sent by default. Footer: configured <code>INB_FOOTER</code> is auto-appended with RFC 3676 sigdash; override per call with <span class="flag">--footer</span>/<span class="flag">--footer-file</span>/<span class="flag">--footer-html</span>, suppress with <span class="flag">--no-footer</span></dd>
+
+        <dt>mark <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>flag changes: <span class="flag">--read</span>/<span class="flag">--unread</span>/<span class="flag">--flag</span>/<span class="flag">--unflag</span></dd>
+
+        <dt>delete <span class="alias">(rm)</span> <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>move to Trash (auto-detected per provider)</dd>
+
+        <dt>archive <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>move to Archive (auto-detected per provider)</dd>
+
+        <dt>move <span class="alias">(mv)</span> <span class="arg">&lt;UID&gt;</span></dt>
+        <dd>move to an arbitrary folder via <span class="flag">--to &lt;folder&gt;</span></dd>
+      </dl>
+
+      <h3>GLOBAL FLAGS</h3>
+      <dl>
+        <dt><span class="flag">--folder</span> <span class="arg">&lt;name&gt;</span></dt>
+        <dd>IMAP folder to operate on (default: <code>INBOX</code>)</dd>
+
+        <dt><span class="flag">--json</span></dt>
+        <dd>emit JSON to stdout instead of the human-readable layout</dd>
+      </dl>
+
+      <h3>ENVIRONMENT</h3>
+      <dl>
+        <dt><span class="flag">INB_IMAP_*</span></dt>
+        <dd><code>HOST</code>, <code>PORT</code> (default <code>993</code> if TLS else <code>143</code>), <code>USER</code>, <code>PASS</code>, <code>TLS</code>=<code>tls</code>|<code>starttls</code>|<code>none</code> (default <code>tls</code>)</dd>
+        <dt><span class="flag">INB_SMTP_*</span></dt>
+        <dd><code>HOST</code>, <code>PORT</code> (default <code>587</code> starttls / <code>465</code> tls / <code>25</code> none), <code>USER</code>, <code>PASS</code>, <code>TLS</code>=<code>starttls</code>|<code>tls</code>|<code>none</code> (default <code>starttls</code>)</dd>
+        <dt><span class="flag">INB_FROM</span></dt>
+        <dd>default From: address for <code>send</code> (e.g. <code>'Alice &lt;alice@example.com&gt;'</code>)</dd>
+        <dt><span class="flag">INB_FOOTER</span></dt>
+        <dd>optional signature appended to outgoing mail (RFC 3676 sigdash). For HTML sends, this is auto-escaped + <code>&lt;br&gt;</code>-wrapped unless <span class="flag">INB_FOOTER_HTML</span> is set.</dd>
+        <dt><span class="flag">INB_FOOTER_FILE</span></dt>
+        <dd>path to a file used as the footer. Wins over <span class="flag">INB_FOOTER</span> if both are set. Supports <code>~/</code> prefix.</dd>
+        <dt>~/.inb.env</dt>
+        <dd>dotenv file loaded BEFORE env vars; env wins on collision. Supports <code>KEY=v</code>, <code>KEY="v"</code> (with <code>\n \r \t</code> escapes), <code>KEY='v'</code> (literal), <code>#</code> comments.</dd>
+      </dl>
+
+      <h3>EXIT STATUS</h3>
+      <dl>
+        <dt>0</dt><dd>success</dd>
+        <dt>1</dt><dd>anything went wrong: network, auth, message/file not found, bad flag, missing required arg, parse error (stderr has the reason)</dd>
+        <dt>2</dt><dd>top-level CLI error: unknown subcommand or no subcommand</dd>
+      </dl>
+
+      <h3>SEE ALSO</h3>
+      <p class="desc">Full schema reference, error catalog, provider settings, behavior guarantees → <a href="./llms.txt">llms.txt</a> (agent-readable, ~600 lines).</p>
+
+    </div>
+  </section>
+
+  <!-- ─────────────────────────── AGENT RECIPES ─────────────────────────── -->
+  <section id="recipes">
+    <div class="prompt">
+      <span class="path">~/inb</span>
+      <span class="sigil">$</span>
+      <span class="cmd">ls</span>
+      <span class="arg">recipes/</span>
+    </div>
+
+    <span class="kicker">in the wild</span>
+    <h2 class="heading">Three ways agents actually <span class="accent">use this</span>.</h2>
+    <p class="lede">
+      None of these need an SDK. They're shell. That's the point — anything that can
+      spawn a subprocess can read and write email.
+    </p>
+
+    <!-- recipe 1 -->
+    <article class="recipe">
+      <header class="recipe-meta">
+        <div class="label">01 — TRIAGE LOOP</div>
+        <h3>Pipe unread mail through your model</h3>
+        <p>List + JSON output + <code style="color:var(--orange)">jq</code> + your favorite agent runner. The model decides what to archive, what to flag, what needs a reply. Re-running tomorrow is safe — already-marked items don't reappear.</p>
+        <div class="tags">
+          <span class="tag">shell</span><span class="tag">jq</span><span class="tag">idempotent</span>
+        </div>
+      </header>
+      <div class="term">
+        <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">triage.sh</span><span class="grow"></span><button class="copy" data-copy="#!/usr/bin/env bash&#10;set -euo pipefail&#10;&#10;inb list --unread --json --limit 25 \&#10;  | jq -c '.[]' \&#10;  | while read -r msg; do&#10;      uid=$(echo &quot;$msg&quot; | jq -r '.uid')&#10;      summary=$(inb read &quot;$uid&quot; --max-bytes=4096 --json \&#10;        | claude --model claude-opus-4-7 -p &quot;classify: keep | archive | reply&quot;)&#10;      case &quot;$summary&quot; in&#10;        archive*) inb archive &quot;$uid&quot; ;;&#10;        reply*)   inb mark &quot;$uid&quot; --flag ;;&#10;        *)        inb mark &quot;$uid&quot; --read ;;&#10;      esac&#10;    done">copy</button></div>
+        <div class="term-body"><span class="cmt">#!/usr/bin/env bash</span>
+<span class="cmt"># Triage the last 25 unread; idempotent on repeat runs.</span>
+<span class="kw">set</span> <span class="flag">-euo pipefail</span>
+
+<span class="cmd">inb</span> <span class="flag">list --unread --json --limit</span> <span class="num">25</span> \
+  | <span class="cmd">jq</span> <span class="flag">-c</span> <span class="str">'.[]'</span> \
+  | <span class="kw">while</span> <span class="kw">read</span> <span class="flag">-r</span> msg; <span class="kw">do</span>
+      uid=$(<span class="cmd">echo</span> <span class="str">"$msg"</span> | <span class="cmd">jq</span> <span class="flag">-r</span> <span class="str">'.uid'</span>)
+      verdict=$(<span class="cmd">inb</span> <span class="flag">read</span> <span class="str">"$uid"</span> <span class="flag">--max-bytes</span>=<span class="num">4096</span> <span class="flag">--json</span> \
+        | <span class="cmd">claude</span> <span class="flag">--model</span> claude-opus-4-7 <span class="flag">-p</span> <span class="str">"classify: keep|archive|reply"</span>)
+      <span class="kw">case</span> <span class="str">"$verdict"</span> <span class="kw">in</span>
+        archive*) <span class="cmd">inb</span> <span class="flag">archive</span> <span class="str">"$uid"</span> ;;
+        reply*)   <span class="cmd">inb</span> <span class="flag">mark</span>    <span class="str">"$uid"</span> <span class="flag">--flag</span> ;;
+        *)        <span class="cmd">inb</span> <span class="flag">mark</span>    <span class="str">"$uid"</span> <span class="flag">--read</span> ;;
+      <span class="kw">esac</span>
+    <span class="kw">done</span></div>
+      </div>
+    </article>
+
+    <hr class="rule" style="margin: 2.5rem 0;">
+
+    <!-- recipe 2 -->
+    <article class="recipe">
+      <header class="recipe-meta">
+        <div class="label">02 — CLAUDE CODE TOOL</div>
+        <h3>Drop-in shell tool for Claude Code</h3>
+        <p>Add a single <code style="color:var(--orange)">.claude/commands/email.md</code> that wraps the four commands an agent actually needs. The model invokes them like any other shell tool.</p>
+        <div class="tags">
+          <span class="tag">claude-code</span><span class="tag">slash-command</span>
+        </div>
+      </header>
+      <div class="term">
+        <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">.claude/commands/email.md</span><span class="grow"></span><button class="copy" data-copy="---&#10;description: Read, search, and send email via inb.&#10;allowed-tools: Bash&#10;---&#10;&#10;You have an email CLI available. Use these commands:&#10;&#10;- `inb list --unread --json` &mdash; list unread mail&#10;- `inb read &lt;UID&gt; --json --max-bytes 8000` &mdash; read one message&#10;- `inb send --to X --subject Y --body -` &mdash; send (body on stdin)&#10;- `inb archive &lt;UID&gt;` / `inb mark &lt;UID&gt; --read` &mdash; clean up&#10;&#10;Always pass --json. UIDs are stable within a folder.&#10;Errors arrive on stderr; check exit code before continuing.&#10;&#10;User task: $ARGUMENTS">copy</button></div>
+        <div class="term-body"><span class="cmt">---</span>
+<span class="key">description</span>: <span class="str">Read, search, and send email via inb.</span>
+<span class="key">allowed-tools</span>: <span class="str">Bash</span>
+<span class="cmt">---</span>
+
+You have an email CLI available. Use these commands<span class="cmt">:</span>
+
+- <span class="str">`inb list --unread --json`</span> &mdash; list unread mail
+- <span class="str">`inb read &lt;UID&gt; --json --max-bytes 8000`</span> &mdash; read one
+- <span class="str">`inb send --to X --subject Y --body -`</span> &mdash; send (stdin body)
+- <span class="str">`inb archive &lt;UID&gt;`</span> / <span class="str">`inb mark &lt;UID&gt; --read`</span> &mdash; clean up
+
+Always pass <span class="hi">--json</span>. UIDs are stable within a folder.
+Errors arrive on stderr; check exit code before continuing.
+
+User task<span class="cmt">:</span> <span class="num">$ARGUMENTS</span></div>
+      </div>
+    </article>
+
+    <hr class="rule" style="margin: 2.5rem 0;">
+
+    <!-- recipe 3 -->
+    <article class="recipe">
+      <header class="recipe-meta">
+        <div class="label">03 — REPLY PIPELINE</div>
+        <h3>Read → think → send, in one pipe</h3>
+        <p>inb reads from stdin for <code style="color:var(--orange)">--body=-</code>, so you can stream the model's response straight into a send. No temp files, no shell-escaping of the body.</p>
+        <div class="tags">
+          <span class="tag">stdin/stdout</span><span class="tag">no-tempfile</span>
+        </div>
+      </header>
+      <div class="term">
+        <div class="term-head"><span class="dots"><span></span><span></span><span></span></span><span class="title">~/inb $</span><span class="grow"></span><button class="copy" data-copy="inb read 421 --json --max-bytes 12000 \&#10;  | claude -p 'Draft a short, friendly reply. Output the body only.' \&#10;  | inb send \&#10;      --to alice@example.com \&#10;      --subject 'Re: PR review needed' \&#10;      --body=-">copy</button></div>
+        <div class="term-body"><span class="p">$</span> <span class="cmd">inb</span> <span class="flag">read</span> <span class="num">421</span> <span class="flag">--json --max-bytes</span> <span class="num">12000</span> \
+    | <span class="cmd">claude</span> <span class="flag">-p</span> <span class="str">'Draft a short, friendly reply. Body only.'</span> \
+    | <span class="cmd">inb</span> <span class="flag">send</span> \
+        <span class="flag">--to</span>      <span class="str">alice@example.com</span> \
+        <span class="flag">--subject</span> <span class="str">'Re: PR review needed'</span> \
+        <span class="flag">--body</span>=<span class="num">-</span>
+
+<span class="ok">sent: 1 recipient(s), 1247 bytes (saved to Sent)</span></div>
+      </div>
+    </article>
+
+    <p class="endnote">
+      <span>inb · MIT · made for processes, not people</span>
+      <span><a href="https://github.com/yuzu-hub/inb">github.com/yuzu-hub/inb</a> &nbsp;·&nbsp; <a href="https://github.com/yuzu-hub/inb/issues">issues</a> &nbsp;·&nbsp; <a href="#hero-title">↑ top</a></span>
+    </p>
+  </section>
+
+</main>
+
+<footer class="statusbar" role="contentinfo">
+  <span class="seg git">git:main</span>
+  <span class="sep">·</span>
+  <span class="seg">go 1.22</span>
+  <span class="sep">·</span>
+  <span class="seg">imap/smtp</span>
+  <span class="grow"></span>
+  <span class="seg">yuzu-hub/inb</span>
+  <span class="sep">·</span>
+  <span class="seg lic">MIT</span>
+</footer>
+
+<script>
+  // copy buttons
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy') || '';
+      // Normalize the &#10; entities the browser already decoded
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(text);
+          ok = true;
+        } else {
+          ok = document.execCommand('copy');
+        }
+      } catch (_) {}
+      document.body.removeChild(ta);
+      if (ok) {
+        var orig = btn.textContent;
+        btn.textContent = 'copied';
+        btn.classList.add('ok');
+        setTimeout(function () {
+          btn.textContent = orig;
+          btn.classList.remove('ok');
+        }, 1400);
+      }
+    });
+  });
+
+  // smooth anchor scroll, with a small offset for the fixed modeline
+  document.querySelectorAll('a[href^="#"]').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      var id = a.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if (!el) return;
+      e.preventDefault();
+      var y = el.getBoundingClientRect().top + window.pageYOffset - 56;
+      window.scrollTo({ top: y, behavior: 'smooth' });
+    });
+  });
+
+  // tiny status-bar "live" — bumps the column counter so the modeline feels alive
+  (function () {
+    var col = document.querySelector('.modeline span:last-child');
+    if (!col) return;
+    var lines = ['1:1', '1:24', '8:1', '14:33', '47:1', '120:14', '203:1'];
+    var i = 0;
+    setInterval(function () {
+      i = (i + 1) % lines.length;
+      col.textContent = lines[i];
+    }, 4200);
+  }());
+</script>
+
+</body>
+</html>

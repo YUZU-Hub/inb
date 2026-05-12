@@ -1,0 +1,23 @@
+# Built binary
+/inb
+
+# Go test artifacts
+*.test
+*.out
+coverage.txt
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+
+# Claude Code (per-user)
+.claude/settings.local.json
+
+# User credentials — NEVER commit
+.env
+.env.*
+.inb.env
