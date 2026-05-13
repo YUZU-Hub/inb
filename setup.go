@@ -253,9 +253,30 @@ func cmdSetup(args []string) error {
 		cfg.From = *email
 	}
 	if interactive {
-		var err error
-		if cfg.From, err = prompt(rd, "\nDefault From address", cfg.From); err != nil {
+		var defaultName, defaultAddr string
+		if a, err := mail.ParseAddress(cfg.From); err == nil {
+			defaultName = a.Name
+			defaultAddr = a.Address
+		} else {
+			defaultAddr = cfg.From
+		}
+		name, err := prompt(rd, "\nDisplay name (shown as sender; blank for bare address)", defaultName)
+		if err != nil {
 			return err
+		}
+		addr, err := prompt(rd, "Default From address", defaultAddr)
+		if err != nil {
+			return err
+		}
+		addr = strings.TrimSpace(addr)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			cfg.From = addr
+		} else {
+			cfg.From = (&mail.Address{Name: name, Address: addr}).String()
+		}
+		if _, err := mail.ParseAddress(cfg.From); err != nil {
+			return fmt.Errorf("invalid From address: %w", err)
 		}
 	}
 

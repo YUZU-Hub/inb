@@ -382,16 +382,26 @@ func cmdSend(cfg *Config, args []string) error {
 	}
 
 	// Best-effort append to Sent over IMAP (Gmail does this server-side; many
-	// providers don't, hence this fallback).
+	// providers don't, hence this fallback). Failures go to stderr so they
+	// don't go unnoticed, but never abort the send.
 	appended := false
 	if *saveSent && cfg.IMAPHost != "" && cfg.IMAPUser != "" {
-		if ic, err := dialIMAP(cfg); err == nil {
-			defer ic.close()
-			if sent, err := ic.resolveSpecialFolder("sent"); err == nil {
-				if err := ic.appendRaw(sent, raw, []string{imap.SeenFlag}); err == nil {
-					appended = true
-				}
+		saveErr := func() error {
+			ic, err := dialIMAP(cfg)
+			if err != nil {
+				return fmt.Errorf("connect IMAP: %w", err)
 			}
+			defer ic.close()
+			sent, err := ic.resolveSpecialFolder("sent")
+			if err != nil {
+				return fmt.Errorf("locate Sent folder: %w", err)
+			}
+			return ic.appendRaw(sent, raw, []string{imap.SeenFlag})
+		}()
+		if saveErr == nil {
+			appended = true
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: could not save to Sent: %v\n", saveErr)
 		}
 	}
 
